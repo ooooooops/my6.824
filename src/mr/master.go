@@ -24,7 +24,10 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-
+func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
+	reply.Y = args.X + 1
+	return nil
+}
 //
 // start a thread that listens for RPCs from worker.go
 //

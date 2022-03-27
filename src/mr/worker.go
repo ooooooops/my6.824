@@ -4,7 +4,11 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
+import "time"
+import "os"
+import "io/ioutil"
+import "sort"
+import "strconv"
 
 //
 // Map functions return a slice of KeyValue.
@@ -88,7 +92,7 @@ func WorkerDoMap(mapf func(string, string) []KeyValue,
 	}
 	file.Close()
 	intermediate := mapf(filename, string(content))
-	
+	fileMap := make(map[string]*File)
 	sort.Sort(ByKey(intermediate))
 	i := 0
 	for i < len(intermediate) {
@@ -102,23 +106,96 @@ func WorkerDoMap(mapf func(string, string) []KeyValue,
 			values = append(values, intermediate[k].Value)
 		}
 		output := reducef(intermediate[i].Key, values)
-		// partition //// TODOYYJ 明天接着做
-		oname := "mr-out-0"
+		// partition
+		// 对key做hash并对nReduce取模得到reduce编号Y，把outputx写入文件mr-X-Y
+		KeyHash := ihash(intermediate[i].Key)
+		ReducerNum := KeyHash % taskinfo.ReduceNum // 当前key应该分发给第ReducerNum个Reduce
+
+		oname := "mr-" + strconv.Itoa(taskinfo.Num) + "-" + strconv.Itoa(ReducerNum)
+		ofile, exists := fileMap[oname]
+		if !exists {
+			ofile, _ := os.OpenFile(oname, os.O_APPEND | os.O_CREATE)
+			fileMap[oname] = ofile
+		}
+		
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
 	}
+
+	for fname in range fileMap {
+		fileMap[fname].Close()
+	}
 }
 
 func WorkerDoReduce(reducef func(string, []string) string, taskinfo TaskInfo) {
+	// 从taskinfo.PathList给出的目录中读出所有的mr-*-{taskinfo.Num}文件中的kv pair
+	kva := []mr.KeyValue{}
+	for _, dir in range taskinfo.PathList {
+		pattern = "mr-*-" + strconv.Itoa(taskinfo.Num)
+		fileInfoList, err := ioutil.ReadDir(dir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(fileInfoList) == 0 {
+			continue
+		}
+		
+		for _, fileinfo in range fileInfoList {
+			matched, err :=  regexp.MatchString(pattern, fileinfo.Name())
+			if err != nil {
+				log.Fatal(err)
+			}
+			if !matched {
+				continue
+			}
+			filePath = dir + "/" + fileinfo.Name()
+			log.Printf("found file %s in reducer(%d)", filePath, taskinfo.Num)
+			file, err := os.Open(filePath)
+			if err != nil {
+				log.Fatalf("cannot open %v", filePath)
+			}
+			for {
+				line, _, err := reader.ReadLine()
+				if err != nil {
+					break
+				}
+				kv := strings.Split(line, " ")
+				kva = append(kva, KeyValue{kv[0], kv[1]})
+			}
+			file.Close()
+		}
+	}
+	// 当前reduce需要处理的所有kv都在kva里面
+	// 为了防止hash碰撞导致的错误（不能认为kva的所有key都相同），先排序再处理
+	sort.Sort(ByKey(kva))
+	oname := "mr-out-" + strconv.Itoa(taskinfo.Num)
+	ofile, _ := os.Create(oname)
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
 
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	ofile.Close()
 }
 
 func GetOneTask() TaskInfo {
 	request := TaskRequest{}
 	reply := TaskReply{}
-	bool errorOccur = call("Master.BuildTask", &request, &reply) // TODOYYJ 实现Master.BuildTask
+	errorOccur = call("Master.BuildTask", &request, &reply) // TODOYYJ 实现Master.BuildTask
 	if errorOccur {
 		return nil // 返回nil认为master已经退出。TODOYYJ 比较好的做法是worker启动以后向master注册，master退出后通知worker退出
 	}

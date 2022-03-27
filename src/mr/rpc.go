@@ -31,6 +31,7 @@ type TaskRequest struct {
 type TaskReply struct {
 	Num int // 任务编号
 	TaskType int // 0 - NONE 无效任务, 1- Map, 2 - Reduce
+	ReduceNum int // Reduce任务的数量
 	FileName string // map任务使用，指向具体的文件
 	PathList []string // Reduce任务使用，目录列表，worker需要根据reduce任务编号去每个目录下寻找名为mr-*-{Num}的文件
 }
