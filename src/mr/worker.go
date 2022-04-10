@@ -62,6 +62,7 @@ func Worker(mapf func(string, string) []KeyValue,
 func WorkerDo(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) bool {
 	taskinfo := GetOneTask()
+
 	if taskinfo.Num < 0 {
 		return true
 	}
@@ -215,9 +216,12 @@ func SendReduceCompleteMsg(file string, task_num int) {
 
 func GetOneTask() TaskInfo {
 	request := TaskRequest{}
-	reply := TaskReply{-1, 0, 0, "", nil} // 任务号<0表示异常
-	errorOccur := call("Master.BuildTask", &request, &reply)
-	if errorOccur {
+	reply := TaskReply{2, 0, 0, "", nil} // 任务号<0表示异常
+	log.Printf("recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
+	no_error := call("Master.BuildTask", &request, &reply)
+	log.Printf("recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
+	if !no_error {
+		log.Printf("error occur")
 		return reply // 返回nil认为master已经退出。TODOYYJ 比较好的做法是worker启动以后向master注册，master退出后通知worker退出
 	}
 	return reply

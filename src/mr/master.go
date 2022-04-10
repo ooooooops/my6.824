@@ -47,14 +47,18 @@ func (m *Master) InitTasks(files []string, nReduce int) {
 	for i := 0; i < len(files); i++ {
 		map_info := MapTaskInfo{i, files[i], TASK_STATUS_INIT}
 		m.MapTasks = append(m.MapTasks, map_info)
+		log.Printf("master will process file [%s]\n", files[i])
 	}
 
 	for i := 0; i < nReduce; i++ {
 		reduce_info := ReduceTaskInfo{i, nil, "", TASK_STATUS_INIT}
 		m.ReduceTasks = append(m.ReduceTasks, reduce_info)
 	}
+	log.Printf("master will startup %d reducers\n", nReduce)
 
 	m.TaskStatus = TASK_STATUS_INIT
+
+	log.Println()
 }
 
 // TODOYYJ
@@ -70,6 +74,7 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
+	log.Printf("master recv task request")
 	for i := 0; i < len(m.MapTasks); i++ {
 		m.mutex.Lock()
 		if m.MapTasks[i].TaskStatus == TASK_STATUS_INIT || m.MapTasks[i].TaskStatus == TASK_STATUS_FAILED {
@@ -80,6 +85,7 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 			reply.ReduceNum = len(m.ReduceTasks)
 			reply.FileName = m.MapTasks[i].FilePath
 			reply.PathList = nil
+			log.Printf("send task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
 			return nil
 		}
 		m.mutex.Unlock()
@@ -118,6 +124,10 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 }
 
 func (m *Master) MapTaskComplete(args *MapCompleteRequest, reply *MapCompleteReply) error {
+	if args.Num >= len(m.MapTasks) {
+		log.Fatalf("params error")
+		return nil
+	}
 	if m.MapTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED { // 防止超时任务突然返回
 		return nil
 	}
