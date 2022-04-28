@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -80,12 +81,14 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 		if m.MapTasks[i].TaskStatus == TASK_STATUS_INIT || m.MapTasks[i].TaskStatus == TASK_STATUS_FAILED {
 			m.MapTasks[i].TaskStatus = TASK_STATUS_DISPATCHED
 			m.mutex.Unlock()
-			reply.Num = m.MapTasks[i].Num
+			// log.Printf("1send task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
+			// reply.TaskNum = 1
+			reply.TaskNum = m.MapTasks[i].Num
 			reply.TaskType = 1
 			reply.ReduceNum = len(m.ReduceTasks)
 			reply.FileName = m.MapTasks[i].FilePath
 			reply.PathList = nil
-			log.Printf("send task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
+			log.Printf("send map task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
 			return nil
 		}
 		m.mutex.Unlock()
@@ -102,23 +105,39 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 		if map_finished { // 等待所有map完成
 			break
 		}
+		time.Sleep(time.Second * 1)
 	}
+	log.Printf("map tasks finished, starting dispathing reduce tasks...")
 	// 分配reduce任务
 	for i := 0; i < len(m.ReduceTasks); i++ {
 		m.mutex.Lock()
 		if m.ReduceTasks[i].TaskStatus == TASK_STATUS_INIT || m.ReduceTasks[i].TaskStatus == TASK_STATUS_FAILED {
 			m.ReduceTasks[i].TaskStatus = TASK_STATUS_DISPATCHED
 			m.mutex.Unlock()
-			reply.Num = m.ReduceTasks[i].Num
+			reply.TaskNum = m.ReduceTasks[i].Num
 			reply.TaskType = 2
 			reply.ReduceNum = len(m.ReduceTasks)
 			reply.FileName = ""
 			reply.PathList = m.ReduceTasks[i].PathList
+			log.Printf("send reduce task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
 			return nil
 		}
 		m.mutex.Unlock()
 	}
-
+	reduce_finished := true
+	for {
+		for i := 0; i < len(m.ReduceTasks); i++ {
+			if m.ReduceTasks[i].TaskStatus != TASK_STATUS_SUCCEED {
+				reduce_finished = false
+				break
+			}
+		}
+		if reduce_finished { // 等待所有reduce完成
+			break
+		}
+		time.Sleep(time.Second * 1)
+	}
+	log.Printf("all tasks finished")
 	m.TaskStatus = TASK_STATUS_SUCCEED
 	return nil
 }
@@ -126,6 +145,7 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 func (m *Master) MapTaskComplete(args *MapCompleteRequest, reply *MapCompleteReply) error {
 	if args.Num >= len(m.MapTasks) {
 		log.Fatalf("params error")
+		// log.Printf("params error")
 		return nil
 	}
 	if m.MapTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED { // 防止超时任务突然返回

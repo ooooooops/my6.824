@@ -31,11 +31,11 @@ type TaskRequest struct {
 
 // master向worker返回任务参数
 type TaskReply struct {
-	Num       int      // 任务编号
 	TaskType  int      // 0 - NONE 无效任务, 1- Map, 2 - Reduce
+	TaskNum   int      // 任务编号
 	ReduceNum int      // Reduce任务的数量
 	FileName  string   // map任务使用，指向具体的文件
-	PathList  []string // Reduce任务使用，目录列表，worker需要根据reduce任务编号去每个目录下寻找名为mr-*-{Num}的文件
+	PathList  []string // Reduce任务使用，文件列表，worker需要根据reduce任务编号去每个目录下寻找名为mr-*-{Num}的文件
 }
 
 type TaskInfo = TaskReply
@@ -77,7 +77,8 @@ type ReduceCompleteReply struct {
 // Can't use the current directory since
 // Athena AFS doesn't support UNIX-domain sockets.
 func masterSock() string {
-	s := "/var/tmp/824-mr-"
+	// s := "/var/tmp/824-mr-"
+	s := "/tmp/824-mr-"
 	s += strconv.Itoa(os.Getuid())
 	return s
 }

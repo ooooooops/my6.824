@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/rpc"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +50,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
-	for true {
+	for {
 		should_break := WorkerDo(mapf, reducef)
 		if should_break {
 			break
@@ -63,7 +62,7 @@ func WorkerDo(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) bool {
 	taskinfo := GetOneTask()
 
-	if taskinfo.Num < 0 {
+	if taskinfo.TaskNum < 0 {
 		return true
 	}
 	if taskinfo.TaskType == 0 {
@@ -76,8 +75,10 @@ func WorkerDo(mapf func(string, string) []KeyValue,
 		return false
 	}
 	if taskinfo.TaskType == 1 {
+		log.Println("processing map task...")
 		WorkerDoMap(mapf, reducef, taskinfo)
 	} else {
+		log.Println("processing reduce task...")
 		WorkerDoReduce(reducef, taskinfo)
 	}
 	// worker继续运行以接受下一个map或reduce任务
@@ -88,6 +89,7 @@ func WorkerDo(mapf func(string, string) []KeyValue,
 func WorkerDoMap(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string, taskinfo TaskInfo) {
 	filename := taskinfo.FileName
+	log.Printf("[MAPPER] mapper processing file %s\n", filename)
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
@@ -97,6 +99,7 @@ func WorkerDoMap(mapf func(string, string) []KeyValue,
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
+	log.Printf("[MAPPER] calling user map function")
 	intermediate := mapf(filename, string(content))
 	fileMap := make(map[string]*os.File)
 	sort.Sort(ByKey(intermediate))
@@ -117,26 +120,28 @@ func WorkerDoMap(mapf func(string, string) []KeyValue,
 		KeyHash := ihash(intermediate[i].Key)
 		ReducerNum := KeyHash % taskinfo.ReduceNum // 当前key应该分发给第ReducerNum个Reduce
 
-		oname := "mr-" + strconv.Itoa(taskinfo.Num) + "-" + strconv.Itoa(ReducerNum)
+		oname := "mr-" + strconv.Itoa(taskinfo.TaskNum) + "-" + strconv.Itoa(ReducerNum)
 		ofile, exists := fileMap[oname]
 		if !exists {
-			ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_CREATE, 0755)
+			ofile, _ := os.Create(oname)
 			fileMap[oname] = ofile
 		}
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
+		log.Printf("[MAPPER] write %v %v to file(%s)\n", intermediate[i].Key, output, oname)
 		i = j
 	}
 
 	files := make([]string, 0, len(fileMap))
 	for fname, fhandle := range fileMap {
 		fhandle.Close()
+		log.Printf("[MAPPER] file %s closed", fname)
 		files = append(files, fname)
 	}
 
-	SendMapCompleteMsg(files, taskinfo.Num)
+	SendMapCompleteMsg(files, taskinfo.TaskNum)
+	log.Printf("[MAPPER] SendMapCompleteMsg done")
 }
 
 func SendMapCompleteMsg(files []string, task_num int) {
@@ -147,44 +152,61 @@ func SendMapCompleteMsg(files []string, task_num int) {
 
 func WorkerDoReduce(reducef func(string, []string) string, taskinfo TaskInfo) {
 	// 从taskinfo.PathList给出的目录中读出所有的mr-*-{taskinfo.Num}文件中的kv pair
-	kva := []KeyValue{}
-	for _, dir := range taskinfo.PathList {
-		pattern := "mr-*-" + strconv.Itoa(taskinfo.Num)
-		fileInfoList, err := ioutil.ReadDir(dir)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if len(fileInfoList) == 0 {
-			continue
-		}
+	// kva := []KeyValue{}
+	// for _, dir := range taskinfo.PathList {
+	// 	pattern := "mr-*-" + strconv.Itoa(taskinfo.TaskNum)
+	// 	log.Printf("[REDUCE] processing dir %s with pattern %s", dir, pattern)
+	// 	fileInfoList, err := ioutil.ReadDir(dir)
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	log.Printf("[REDUCE] find %d file in dir %s", len(fileInfoList), dir)
+	// 	if len(fileInfoList) == 0 {
+	// 		continue
+	// 	}
 
-		for _, fileinfo := range fileInfoList {
-			matched, err := regexp.MatchString(pattern, fileinfo.Name())
-			if err != nil {
-				log.Fatal(err)
-			}
-			if !matched {
-				continue
-			}
-			filePath := dir + "/" + fileinfo.Name()
-			log.Printf("found file %s in reducer(%d)", filePath, taskinfo.Num)
-			file, err := os.Open(filePath)
-			if err != nil {
-				log.Fatalf("cannot open %v", filePath)
-			}
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				line := scanner.Text()
-				kv := strings.Split(line, " ")
-				kva = append(kva, KeyValue{kv[0], kv[1]})
-			}
-			file.Close()
+	// 	for _, fileinfo := range fileInfoList {
+	// 		matched, err := regexp.MatchString(pattern, fileinfo.Name())
+	// 		if err != nil {
+	// 			log.Fatal(err)
+	// 		}
+	// 		if !matched {
+	// 			continue
+	// 		}
+	// 		filePath := dir + "/" + fileinfo.Name()
+	// 		log.Printf("found file %s in reducer(%d)", filePath, taskinfo.TaskNum)
+	// 		file, err := os.Open(filePath)
+	// 		if err != nil {
+	// 			log.Fatalf("cannot open %v", filePath)
+	// 		}
+	// 		scanner := bufio.NewScanner(file)
+	// 		for scanner.Scan() {
+	// 			line := scanner.Text()
+	// 			kv := strings.Split(line, " ")
+	// 			kva = append(kva, KeyValue{kv[0], kv[1]})
+	// 		}
+	// 		file.Close()
+	// 	}
+	// }
+	kva := []KeyValue{}
+	for _, filePath := range taskinfo.PathList {
+		log.Printf("[REDUCE] found file %s in reducer(%d)", filePath, taskinfo.TaskNum)
+		file, err := os.Open(filePath)
+		if err != nil {
+			log.Fatalf("cannot open %v", filePath)
 		}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			kv := strings.Split(line, " ")
+			kva = append(kva, KeyValue{kv[0], kv[1]})
+		}
+		file.Close()
 	}
 	// 当前reduce需要处理的所有kv都在kva里面
 	// 为了防止hash碰撞导致的错误（不能认为kva的所有key都相同），先排序再处理
 	sort.Sort(ByKey(kva))
-	oname := "mr-out-" + strconv.Itoa(taskinfo.Num)
+	oname := "mr-out-" + strconv.Itoa(taskinfo.TaskNum)
 	ofile, _ := os.Create(oname)
 	i := 0
 	for i < len(kva) {
@@ -196,16 +218,17 @@ func WorkerDoReduce(reducef func(string, []string) string, taskinfo TaskInfo) {
 		for k := i; k < j; k++ {
 			values = append(values, kva[k].Value)
 		}
+		log.Printf("[REDUCER] write %v %v to reducef\n", kva[i].Key, values)
 		output := reducef(kva[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-
+		log.Printf("[REDUCER] write %v %v to file(%s)\n", kva[i].Key, output, oname)
 		i = j
 	}
 	ofile.Close()
 
-	SendReduceCompleteMsg(oname, taskinfo.Num)
+	SendReduceCompleteMsg(oname, taskinfo.TaskNum)
 }
 
 func SendReduceCompleteMsg(file string, task_num int) {
@@ -216,15 +239,16 @@ func SendReduceCompleteMsg(file string, task_num int) {
 
 func GetOneTask() TaskInfo {
 	request := TaskRequest{}
-	reply := TaskReply{2, 0, 0, "", nil} // 任务号<0表示异常
-	log.Printf("recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
+	// reply := TaskReply{99, 888, 0, "", nil} // 任务号<0表示异常
+	reply := new(TaskReply)
+	// log.Printf("1recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
 	no_error := call("Master.BuildTask", &request, &reply)
-	log.Printf("recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.Num, reply.TaskType, reply.ReduceNum, reply.FileName)
+	log.Printf("recvd task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
 	if !no_error {
 		log.Printf("error occur")
-		return reply // 返回nil认为master已经退出。TODOYYJ 比较好的做法是worker启动以后向master注册，master退出后通知worker退出
+		return *reply // 返回nil认为master已经退出。TODOYYJ 比较好的做法是worker启动以后向master注册，master退出后通知worker退出
 	}
-	return reply
+	return *reply
 }
 
 //
@@ -263,12 +287,13 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()
-
+	// fmt.Printf("[%s]1\n", rpcname)
 	err = c.Call(rpcname, args, reply)
 	if err == nil {
+		// fmt.Printf("2[%s] request[%v] reply[%v]\n", rpcname, args, reply)
 		return true
 	}
-
+	// fmt.Printf("3[%s] request[%v] reply[%v]\n", rpcname, args, reply)
 	fmt.Println(err)
 	return false
 }
