@@ -123,13 +123,13 @@ func WorkerDoMap(mapf func(string, string) []KeyValue,
 		oname := "mr-" + strconv.Itoa(taskinfo.TaskNum) + "-" + strconv.Itoa(ReducerNum)
 		ofile, exists := fileMap[oname]
 		if !exists {
-			ofile, _ := os.Create(oname)
+			ofile, _ = os.Create(oname)
 			fileMap[oname] = ofile
 		}
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-		log.Printf("[MAPPER] write %v %v to file(%s)\n", intermediate[i].Key, output, oname)
+		log.Printf("[MAPPER] write %v %v to file(%v)\n", intermediate[i].Key, output, ofile.Name())
 		i = j
 	}
 
@@ -218,12 +218,12 @@ func WorkerDoReduce(reducef func(string, []string) string, taskinfo TaskInfo) {
 		for k := i; k < j; k++ {
 			values = append(values, kva[k].Value)
 		}
-		log.Printf("[REDUCER] write %v %v to reducef\n", kva[i].Key, values)
+		// log.Printf("[REDUCER] write %v %v to reducef\n", kva[i].Key, values)
 		output := reducef(kva[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-		log.Printf("[REDUCER] write %v %v to file(%s)\n", kva[i].Key, output, oname)
+		log.Printf("[REDUCER] write %s %s to file(%s)\n", kva[i].Key, output, oname)
 		i = j
 	}
 	ofile.Close()
