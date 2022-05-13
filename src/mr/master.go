@@ -16,20 +16,23 @@ const (
 	TASK_STATUS_INIT = iota
 	TASK_STATUS_DISPATCHED
 	TASK_STATUS_FAILED
+	TASK_STATUS_TIMEDOUT
 	TASK_STATUS_SUCCEED
 )
 
 type MapTaskInfo struct {
-	Num        int // 任务编号
-	FilePath   string
-	TaskStatus int
+	Num          int // 任务编号
+	FilePath     string
+	TaskStatus   int
+	DispatchTime int
 }
 
 type ReduceTaskInfo struct {
-	Num        int // 任务编号
-	PathList   []string
-	ResultFile string
-	TaskStatus int
+	Num          int // 任务编号
+	PathList     []string
+	ResultFile   string
+	TaskStatus   int
+	DispatchTime int
 }
 
 type Master struct {
@@ -46,13 +49,13 @@ type Master struct {
 
 func (m *Master) InitTasks(files []string, nReduce int) {
 	for i := 0; i < len(files); i++ {
-		map_info := MapTaskInfo{i, files[i], TASK_STATUS_INIT}
+		map_info := MapTaskInfo{i, files[i], TASK_STATUS_INIT, 0}
 		m.MapTasks = append(m.MapTasks, map_info)
 		log.Printf("master will process file [%s]\n", files[i])
 	}
 
 	for i := 0; i < nReduce; i++ {
-		reduce_info := ReduceTaskInfo{i, nil, "", TASK_STATUS_INIT}
+		reduce_info := ReduceTaskInfo{i, nil, "", TASK_STATUS_INIT, 0}
 		m.ReduceTasks = append(m.ReduceTasks, reduce_info)
 	}
 	log.Printf("master will startup %d reducers\n", nReduce)
@@ -62,25 +65,49 @@ func (m *Master) InitTasks(files []string, nReduce int) {
 	log.Println()
 }
 
-// TODOYYJ
-// 1. 任务超时重置
 // 2. worker向master发起请求的超时机制
 // an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+func (m *Master) ResetTimedoutTask() {
+	for {
+		time_now := time.Now().Second()
+		for i := 0; i < len(m.MapTasks); i++ {
+			m.mutex.Lock()
+			if m.MapTasks[i].TaskStatus == TASK_STATUS_DISPATCHED {
+				time_elapse := time_now - m.MapTasks[i].DispatchTime
+				if time_elapse > 10 {
+					m.MapTasks[i].TaskStatus = TASK_STATUS_TIMEDOUT
+					log.Printf("[MASTER] map[%d] timed out, reset", m.MapTasks[i].Num)
+				}
+			}
+			m.mutex.Unlock()
+		}
+
+		for i := 0; i < len(m.ReduceTasks); i++ {
+			m.mutex.Lock()
+			if m.ReduceTasks[i].TaskStatus == TASK_STATUS_DISPATCHED {
+				time_elapse := time_now - m.ReduceTasks[i].DispatchTime
+				if time_elapse > 10 {
+					m.ReduceTasks[i].TaskStatus = TASK_STATUS_TIMEDOUT
+					log.Printf("[MASTER] reduce[%d] timed out, reset", m.ReduceTasks[i].Num)
+				}
+			}
+			m.mutex.Unlock()
+		}
+	}
 }
 
-func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
-	log.Printf("master recv task request")
+func (m *Master) BuildMapTask(args *TaskRequest, reply *TaskReply) bool {
 	for i := 0; i < len(m.MapTasks); i++ {
 		m.mutex.Lock()
-		if m.MapTasks[i].TaskStatus == TASK_STATUS_INIT || m.MapTasks[i].TaskStatus == TASK_STATUS_FAILED {
+		if m.MapTasks[i].TaskStatus == TASK_STATUS_INIT || m.MapTasks[i].TaskStatus == TASK_STATUS_TIMEDOUT ||
+			m.MapTasks[i].TaskStatus == TASK_STATUS_FAILED {
 			m.MapTasks[i].TaskStatus = TASK_STATUS_DISPATCHED
+			m.MapTasks[i].DispatchTime = time.Now().Second()
 			m.mutex.Unlock()
+
 			// log.Printf("1send task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
 			// reply.TaskNum = 1
 			reply.TaskNum = m.MapTasks[i].Num
@@ -88,16 +115,47 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 			reply.ReduceNum = len(m.ReduceTasks)
 			reply.FileName = m.MapTasks[i].FilePath
 			reply.PathList = nil
-			log.Printf("send map task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
-			return nil
+			log.Printf("[MASTER] send map:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
+			return true
 		}
 		m.mutex.Unlock()
 	}
+	return false
+}
+
+func (m *Master) BuildReduceTask(args *TaskRequest, reply *TaskReply) bool {
+	for i := 0; i < len(m.ReduceTasks); i++ {
+		m.mutex.Lock()
+		if m.ReduceTasks[i].TaskStatus == TASK_STATUS_INIT || m.ReduceTasks[i].TaskStatus == TASK_STATUS_TIMEDOUT ||
+			m.ReduceTasks[i].TaskStatus == TASK_STATUS_FAILED {
+			m.ReduceTasks[i].TaskStatus = TASK_STATUS_DISPATCHED
+			m.ReduceTasks[i].DispatchTime = time.Now().Second()
+			m.mutex.Unlock()
+			reply.TaskNum = m.ReduceTasks[i].Num
+			reply.TaskType = 2
+			reply.ReduceNum = len(m.ReduceTasks)
+			reply.FileName = ""
+			reply.PathList = m.ReduceTasks[i].PathList
+			log.Printf("[MASTER] send reduce:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
+			return true
+		}
+		m.mutex.Unlock()
+	}
+	return false
+}
+
+func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
+	log.Printf("[MASTER] recv task request")
+	build_map_success := m.BuildMapTask(args, reply)
+	if build_map_success {
+		return nil
+	}
 	// 没有找到map任务，检查所有map任务是否完成；如果没有完成则等待，完成则分配reduce任务
-	map_finished := true
 	for {
+		map_finished := true
 		for i := 0; i < len(m.MapTasks); i++ {
 			if m.MapTasks[i].TaskStatus != TASK_STATUS_SUCCEED {
+				log.Printf("[MASTER] map(%d) status(%d)", m.MapTasks[i].Num, m.MapTasks[i].TaskStatus)
 				map_finished = false
 				break
 			}
@@ -105,27 +163,22 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 		if map_finished { // 等待所有map完成
 			break
 		}
-		time.Sleep(time.Second * 1)
-	}
-	log.Printf("map tasks finished, starting dispathing reduce tasks...")
-	// 分配reduce任务
-	for i := 0; i < len(m.ReduceTasks); i++ {
-		m.mutex.Lock()
-		if m.ReduceTasks[i].TaskStatus == TASK_STATUS_INIT || m.ReduceTasks[i].TaskStatus == TASK_STATUS_FAILED {
-			m.ReduceTasks[i].TaskStatus = TASK_STATUS_DISPATCHED
-			m.mutex.Unlock()
-			reply.TaskNum = m.ReduceTasks[i].Num
-			reply.TaskType = 2
-			reply.ReduceNum = len(m.ReduceTasks)
-			reply.FileName = ""
-			reply.PathList = m.ReduceTasks[i].PathList
-			log.Printf("send reduce task:num(%d),type(%d),nreduce(%d),map file(%s)", reply.TaskNum, reply.TaskType, reply.ReduceNum, reply.FileName)
+		build_map_success := m.BuildMapTask(args, reply)
+		if build_map_success {
 			return nil
 		}
-		m.mutex.Unlock()
+		log.Printf("[MASTER] wait all map finish...")
+		time.Sleep(time.Second * 1)
 	}
-	reduce_finished := true
+	log.Printf("[MASTER] map tasks finished, starting dispathing reduce tasks...")
+	// 分配reduce任务
+	build_reduce_success := m.BuildReduceTask(args, reply)
+	if build_reduce_success {
+		return nil
+	}
+
 	for {
+		reduce_finished := true
 		for i := 0; i < len(m.ReduceTasks); i++ {
 			if m.ReduceTasks[i].TaskStatus != TASK_STATUS_SUCCEED {
 				reduce_finished = false
@@ -135,20 +188,27 @@ func (m *Master) BuildTask(args *TaskRequest, reply *TaskReply) error {
 		if reduce_finished { // 等待所有reduce完成
 			break
 		}
+		build_reduce_success := m.BuildReduceTask(args, reply)
+		if build_reduce_success {
+			return nil
+		}
+		log.Printf("[MASTER] wait all reduce finish...")
 		time.Sleep(time.Second * 1)
 	}
-	log.Printf("all tasks finished")
+	log.Printf("[MASTER] all tasks finished")
 	m.TaskStatus = TASK_STATUS_SUCCEED
 	return nil
 }
 
 func (m *Master) MapTaskComplete(args *MapCompleteRequest, reply *MapCompleteReply) error {
+	log.Printf("[MASTER] MapTaskComplete")
 	if args.Num >= len(m.MapTasks) {
 		log.Fatalf("params error")
 		// log.Printf("params error")
 		return nil
 	}
-	if m.MapTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED { // 防止超时任务突然返回
+	if m.MapTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED ||
+		m.MapTasks[args.Num].TaskStatus == TASK_STATUS_TIMEDOUT { // 防止超时任务突然返回
 		return nil
 	}
 	m.MapTasks[args.Num].TaskStatus = TASK_STATUS_SUCCEED
@@ -164,7 +224,9 @@ func (m *Master) MapTaskComplete(args *MapCompleteRequest, reply *MapCompleteRep
 }
 
 func (m *Master) ReduceTaskComplete(args *ReduceCompleteRequest, reply *ReduceCompleteReply) error {
-	if m.ReduceTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED { // 防止超时任务突然返回
+	log.Printf("[MASTER] ReduceTaskComplete")
+	if m.ReduceTasks[args.Num].TaskStatus == TASK_STATUS_SUCCEED ||
+		m.ReduceTasks[args.Num].TaskStatus == TASK_STATUS_TIMEDOUT { // 防止超时任务突然返回
 		return nil
 	}
 	m.ReduceTasks[args.Num].TaskStatus = TASK_STATUS_SUCCEED
@@ -218,6 +280,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.Files = files
 	m.NReduce = nReduce
 	m.InitTasks(files, nReduce)
+	go m.ResetTimedoutTask()
 	m.server()
 	return &m
 }
